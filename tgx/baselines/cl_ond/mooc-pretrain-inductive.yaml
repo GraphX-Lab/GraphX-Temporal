@@ -1,0 +1,66 @@
+
+fit:
+  fit_only: true
+  model:
+    class_path: tgx.baselines.cl_ond.arch.PretrainModel
+    init_args:
+      input_dim: 172
+      hidden_dim: 128
+      output_dim: 128
+      num_communities: 50
+      alpha: 0.5
+      lambda_: 0.5
+      temperature: 0.1
+      evaluator:
+        class_path: tgx.models.DummyEvaluator
+        init_args: {}
+
+  # Data parameters (data class parameters) - LP DataModule
+  data:
+    class_path: tgx.baselines.cl_ond.data.PretrainDataModule
+    init_args:
+      dataset: mooc
+      data_dir: ./datasets
+      mode: inductive  # transductive or inductive
+      split_ratio: [0.5, 0.25, 0.25]  # pretrain, unused, unused
+      shuffle_train: true
+
+  # Training parameters
+  trainer:
+    accelerator: gpu  # auto, cpu, gpu, tpu, mps
+    devices: 1
+    max_epochs: 100
+    accumulate_grad_batches: 1
+    log_every_n_steps: 50
+    deterministic: false
+
+    # Disable validation and test during pretraining
+    limit_val_batches: 0
+    limit_test_batches: 0
+    val_check_interval: 0
+    num_sanity_val_steps: 0
+
+  # Callbacks
+    callbacks:
+    #   - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    #     init_args:
+    #       dirpath: ./checkpoints/cl-ond/${fit.data.init_args.dataset}/pretrain-${fit.data.init_args.mode}/
+    #       filename: best
+    #       monitor: train/loss
+    #       mode: min
+    #       save_top_k: 1
+    #       save_last: true
+    #       verbose: false
+
+    #   - class_path: lightning.pytorch.callbacks.EarlyStopping
+    #     init_args:
+    #       monitor: train/loss
+    #       mode: min
+    #       patience: 10
+    #       verbose: false
+
+      - class_path: lightning.pytorch.callbacks.RichProgressBar
+        init_args:
+          leave: false
+
+    logger: false

@@ -1,0 +1,1 @@
+"""CLI module for training temporal graph models"""

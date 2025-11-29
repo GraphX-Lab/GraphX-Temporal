@@ -1,0 +1,63 @@
+# Lightning CLI configuration for MOOC dataset - Link Prediction Task
+fit:
+# Model parameters (model class parameters) - LP specific
+  model:
+    class_path: tgx.baselines.simple.arch.MLPModel
+    init_args:
+      # task: link_classification  # Fixed for link classification
+      input_dim: 172
+      hidden_dim: 128
+      output_dim: 128  # Binary classification for link classification
+      dropout: 0.1
+      evaluator:
+        class_path: tgx.models.LinkClassificationEvaluator
+        init_args:
+          input_dim: ${fit.model.init_args.hidden_dim}
+
+  # Data parameters (data class parameters) - LC DataModule
+  data:
+    class_path: tgx.data.LCDataModule
+    init_args:
+      dataset: mooc
+      data_dir: ./datasets
+      batch_size: 32
+      num_workers: 4
+      pin_memory: true
+      shuffle_train: true
+      mode: transductive  # transductive or inductive
+      use_validation: true
+
+  # Training parameters
+  trainer:
+    accelerator: gpu  # auto, cpu, gpu, tpu, mps
+    devices: 1
+    max_epochs: 100
+    precision: 32  # 16, 32
+    gradient_clip_val: 1.0
+    accumulate_grad_batches: 1
+    log_every_n_steps: 1
+
+  # Callbacks
+    callbacks:
+      - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+        init_args:
+          dirpath: ./checkpoints/simple/mlp/${fit.data.init_args.dataset}/lc/
+          filename: best
+          monitor: val/loss
+          mode: min
+          save_top_k: 1
+          save_last: true
+          verbose: false
+
+      - class_path: lightning.pytorch.callbacks.EarlyStopping
+        init_args:
+          monitor: val/loss
+          mode: min
+          patience: 10
+          verbose: false
+
+      - class_path: lightning.pytorch.callbacks.RichProgressBar
+        init_args:
+          leave: false
+
+    logger: True
