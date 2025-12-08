@@ -88,7 +88,7 @@ class LinkPredictionEvaluator(TemporalEvaluator):
                      - 'edge_types': Integer tensor indicating edge types (0=old-old, 1=new-old, 2=old-new, 3=new-new)
         """
         predictions = outputs["predictions"]
-            
+
         # Convert logits to probabilities
         probs = torch.sigmoid(predictions)
 
@@ -99,7 +99,7 @@ class LinkPredictionEvaluator(TemporalEvaluator):
         # Inductive-specific metrics
         if node_info is not None:
             is_new_node = node_info.get(
-                "is_new_node", torch.zeros_like(targets, dtype=bool)
+                "is_new_node_edge", torch.zeros_like(targets, dtype=bool)
             )
             edge_types = node_info.get(
                 "edge_types", torch.zeros_like(targets, dtype=torch.long)
@@ -134,7 +134,7 @@ class LinkPredictionEvaluator(TemporalEvaluator):
 
             # Edge type specific metrics
             for edge_type, type_name in enumerate(self.inductive_edge_types):
-                type_mask = (edge_types == edge_type)
+                type_mask = edge_types == edge_type
                 for metric_name in self.metric_names:
                     result_key = f"{metric_name}/{type_name}"
                     if type_mask.sum() > 0:
@@ -147,15 +147,19 @@ class LinkPredictionEvaluator(TemporalEvaluator):
 
         return result
 
-    def log_metrics(self, metrics: Dict[str, float], stage: str, logger: Any) -> None:
+    def log_metrics(
+        self, metrics: Dict[str, float], stage: str, logger: Any, batch_size=None
+    ) -> None:
         """Log link prediction metrics."""
         for metric_name, metric_value in metrics.items():
-            logger.log(f"{stage}/{metric_name}", metric_value)
+            logger.log(f"{stage}/{metric_name}", metric_value, batch_size=batch_size)
 
         # For inductive, prioritize new node metrics
         main_metric = "auroc"
 
-        logger.log(f"{stage}/main_metric", metrics.get(main_metric, 0.0))
+        logger.log(
+            f"{stage}/main_metric", metrics.get(main_metric, 0.0), batch_size=batch_size
+        )
 
     def forward(self, edge_embeddings: torch.Tensor) -> torch.Tensor:
         """Forward pass through evaluator to get link prediction probabilities."""
@@ -167,8 +171,10 @@ class LinkPredictionEvaluator(TemporalEvaluator):
 
         return predictions
 
-    def get_targets(self, batch:Data, outputs: ModelOutputs, stage) -> torch.LongTensor:
-        return batch.edge_label.long().to(self.device) 
+    def get_targets(
+        self, batch: Data, outputs: ModelOutputs, stage
+    ) -> torch.LongTensor:
+        return batch.edge_label.long().to(self.device)
 
     def postprocess_outputs(
         self,
@@ -176,8 +182,6 @@ class LinkPredictionEvaluator(TemporalEvaluator):
         batch: Optional[Data] = None,
         stage: Optional[str] = None,
     ) -> ModelOutputs:
-        outputs =  super().postprocess_outputs(outputs, batch=batch, stage=stage)
+        outputs = super().postprocess_outputs(outputs, batch=batch, stage=stage)
         outputs["predictions"] = self(outputs["edge_embeddings"])
         return outputs
-
-

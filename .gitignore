@@ -24,6 +24,7 @@ datasets/
 DyGLib/
 DyGLib
 benchtemp/
+benchtemp
 
 # Logger
 logs/

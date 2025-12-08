@@ -67,10 +67,10 @@ bash setup_env_conda_cu126.sh
 
 ```bash
 # Train SimpleGNN for link prediction on MOOC dataset
-python -m tgx.cli.train --config tgx/baselines/simple/gcn-mooc-lp.yaml
+python -m tgx.cli.train --config tgx/baselines/simple/gcn-mooc-lp.yaml fit 
 
 # Train CL-OND for link classification
-python -m tgx.cli.train --config tgx/baselines/cl_ond/mooc-lc.yaml
+python -m tgx.cli.train --config tgx/baselines/cl_ond/mooc-lc.yaml fit
 ```
 
 ### 2. Custom Training with Parameter Override
@@ -78,6 +78,7 @@ python -m tgx.cli.train --config tgx/baselines/cl_ond/mooc-lc.yaml
 ```bash
 python -m tgx.cli.train \
   --config tgx/baselines/simple/gcn-mooc-lp.yaml \
+  fit \
   --model.init_args.hidden_dim 256 \
   --trainer.max_epochs 50 \
   --trainer.devices 1
@@ -85,31 +86,51 @@ python -m tgx.cli.train \
 
 ### 3. Using Custom Models
 
+First, implement your model:
+
 ```python
+# my_model.py
+import torch
 from tgx.models import TemporalModel
-from tgx.models.evaluators import LinkPredictionEvaluator
-from tgx.data import LPDataModule
 
-# Create model with custom evaluator
-model = MyTemporalModel(
-    learning_rate=1e-3,
-    evaluator=LinkPredictionEvaluator(
-        input_dim=256,
-        metric_names=["auroc", "ap", "f1"]
-    )
-)
+class MyTemporalModel(TemporalModel):
+  def __init__(self, hidden_dim:int, **kwargs):
+    super().__init__(**kwargs)
+    self.hidden_dim = hidden_dim
+    self.lin = torch.nn.Linear(172, hidden_dim)
+  
+  def forward(self, batch):
+    x = self.lin(batch.x)
+    src_x = x[batch.edge_index[0]]
+    dst_x = x[batch.edge_index[1]]
+    edge_x = (src_x + dst_x).relu()
+    return {'node_embeddings': x, 'edge_embeddings': edge_x}
 
-# Setup data module
-datamodule = LPDataModule(
-    dataset="mooc",
-    batch_size=32,
-    mode="transductive"
-)
+```
 
-# Train with Lightning
-import lightning.pytorch as pl
-trainer = pl.Trainer(max_epochs=100, gpus=1)
-trainer.fit(model, datamodule)
+Then, recommend writing a simple YAML configuration:
+
+```yaml
+fit:
+  model:
+    class_path: my_model.MyTemporalModel
+    init_args:
+      hidden_dim: 128
+      evaluator:
+        class_path: tgx.models.LinkPredictionEvaluator  # Use the Link Prediction Evaluator
+        init_args:
+          input_dim: ${fit.model.init_args.hidden_dim} 
+
+  data:
+    class_path: tgx.data.LPDataModule # Use the Link Prediction DataModule
+    init_args:
+      dataset: mooc
+      mode: inductive
+
+  trainer:  # Train up to 100 epochs on a single GPU
+    accelerator: gpu
+    devices: 1
+    max_epochs: 100
 ```
 
 ## 🏗️ Framework Architecture

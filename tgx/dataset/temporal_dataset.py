@@ -52,7 +52,7 @@ class TemporalDatasetLoader(ABC):
 
         try:
             graph_df = pd.read_csv(csv_path)
-            edge_features = np.load(edge_feat_path)
+            edge_features = np.load(edge_feat_path)[1:]
             node_features = np.load(node_feat_path)
         except FileNotFoundError:
             # Fallback to flat structure without subdirectory

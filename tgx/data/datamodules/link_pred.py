@@ -5,21 +5,19 @@ This module provides specialized data loading and processing for link prediction
 tasks using the benchtemp format with LPDatasetLoader.
 """
 
-from pathlib import Path
 from typing import List, Optional
 
-import lightning.pytorch as pl
 import numpy as np
 import torch
 from torch_geometric.data import Data
-from torch_geometric.loader import DataLoader
-from torch_geometric.utils import negative_sampling
+from torch_geometric.loader import DataLoader, LinkNeighborLoader
 
 from tgx.dataset.lp import LPDatasetLoader
 from ..temporal_data import Data as TemporalData
+from .temporal_datamodule import TemporalDataModule
 
 
-class LPDataModule(pl.LightningDataModule):
+class LPDataModule(TemporalDataModule):
     inductive_edge_types = ["new_old", "old_new", "new_new"]
 
     """
@@ -51,44 +49,51 @@ class LPDataModule(pl.LightningDataModule):
         negative_sampling_ratio: float = 1.0,
         different_new_nodes_between_val_and_test: bool = False,
         split_ratio: List[float] = [0.7, 0.15, 0.15],
+        num_neighbors: List[int] = [20, 20],
         mode: str = "transductive",
+        historical_messages: bool = True,
+        disjoint_training_edges: bool = False,
         **kwargs,
     ):
-        super().__init__()
-        self.dataset = dataset
-        self.data_dir = Path(data_dir)
-        self.batch_size = batch_size
-        self.num_workers = num_workers
-        self.pin_memory = pin_memory
-        self.shuffle_train = shuffle_train
+        super().__init__(
+            dataset=dataset,
+            data_dir=data_dir,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            shuffle_train=shuffle_train,
+            split_ratio=split_ratio,
+            mode=mode,
+            num_neighbors=num_neighbors,
+            **kwargs,
+        )
+
         self.negative_sampling_ratio = negative_sampling_ratio
         self.different_new_nodes_between_val_and_test = (
             different_new_nodes_between_val_and_test
         )
-        if len(split_ratio) == 2:
-            split_ratio = [None] + split_ratio  # Train ratio will be inferred
-
-        self.split_ratio = split_ratio
 
         # LPDatasetLoader will be initialized in setup() to avoid circular import
         self.dataset_loader = None
-        self.mode = mode
+        self.historical_messages = historical_messages
+        self.disjoint_training_edges = disjoint_training_edges
 
-        # Initialize data containers as None (will be created in setup)
-        self.node_features = None
-        self.edge_features = None
-        self.train_data = None
-        self.val_data = None
-        self.test_data = None
+        # Additional data containers specific to link prediction
         self.new_node_val_data = None
         self.new_node_test_data = None
+        self.new_old_node_val_data = None
+        self.new_old_node_test_data = None
+        self.new_new_node_val_data = None
+        self.new_new_node_test_data = None
+        self.unseen_nodes = None
+        self.unseen_nodes_num = None
 
-        # Store basic dataset info
-        self.num_nodes = None
-        self.node_features_dim = None
-        self.edge_features_dim = None
-
-        self.np_rng = np.random.default_rng(42)
+        # Inductive node info
+        self.train_node_type_info = None
+        self.val_node_type_info = None
+        self.test_node_type_info = None
+        self.new_node_val_type_info = None
+        self.new_node_test_type_info = None
 
     def setup(self, stage: Optional[str] = None):
         """Setup datasets for training, validation, and testing using LPDatasetLoader."""
@@ -143,15 +148,19 @@ class LPDataModule(pl.LightningDataModule):
         self.val_node_type_info = None
         self.test_node_type_info = None
 
-        # edge index dict for different message passing schemes
-        self.message_edge_index_dict = {}
+        if self.disjoint_training_edges:
+            self.training_disjoint_mask = (
+                self.np_rng.random(len(self.train_data.sources)) < 0.1
+            )
+        else:
+            self.training_disjoint_mask = None
 
         # Create node type information for inductive evaluation
         if self.mode == "inductive":
             self._create_node_type_info()
 
         # Store dataset information
-        self._store_dataset_info()
+        self._store_dataset_info(task_prefix="LP")
 
     def _create_node_type_info(self):
         """Create node type information for inductive evaluation."""
@@ -240,114 +249,76 @@ class LPDataModule(pl.LightningDataModule):
         else:
             self.new_node_test_type_info = None
 
-    def _store_dataset_info(self):
-        """Store dataset information for later use."""
-        self.num_nodes = int(self.full_data.num_nodes)
-        self.node_features_dim = self.node_features.shape[1]
-        self.edge_features_dim = self.edge_features.shape[1]
-
-        if self.train_data is not None:
-            print(f"  Training: {len(self.train_data.sources)} interactions")
-        if self.val_data is not None:
-            print(f"  Validation: {len(self.val_data.sources)} interactions")
-        if self.test_data is not None:
-            print(f"  Test: {len(self.test_data.sources)} interactions")
-        print(f"  Nodes: {self.num_nodes}, Node feat dim: {self.node_features_dim}")
-
-    def _create_pyg_data(
+    def get_message_edges(
         self,
-        temporal_data: TemporalData,
-        node_type_info=None,
-        stage="train",
-        disjoint_message_label_edges=False,
+        stage,
+        temporal_data=None,
     ):
-        """Convert temporal data to PyTorch Geometric Data object."""
-        if stage == "train":
-            if disjoint_message_label_edges:
-                # randomly mask 10% edges for link prediction labels
-                msk = self.np_rng.random(len(temporal_data.sources)) < 0.1
-                message_data = temporal_data.apply_mask(~msk)
-                label_data = temporal_data.apply_mask(msk)
-            else:
-                message_data = temporal_data
-                label_data = temporal_data
-        elif stage == "val":
-            val_timestamp = self.val_data.timestamps.min()
-            msk = self.full_data.timestamps < val_timestamp
-            message_data = self.train_data
-            label_data = temporal_data
-        elif stage == "test":
+        if stage == "train" and self.disjoint_training_edges:
+            # For disjoint training, mask 10% edges for link prediction labels
+            msk = self.training_disjoint_mask
+            message_data = temporal_data.apply_mask(~msk)
+            tensor_dict = message_data.to_tensor_dict()
+            message_edges = {
+                "edge_index": tensor_dict["edge_index"],
+                "edge_attr": tensor_dict["edge_attr"],
+                "edge_idxs": tensor_dict["edge_idx"],
+                "edge_time": tensor_dict["timestamps"],
+            }
+        elif stage == "test" and self.mode == "inductive":
+            # For inductive test, filter out edges with unseen nodes
             test_timestamp = self.test_data.timestamps.min()
-            msk = self.full_data.timestamps < test_timestamp
-            message_data = self.full_data.apply_mask(msk)
-            label_data = temporal_data
-
-        # Convert to PyTorch tensors
-        x = torch.from_numpy(self.node_features).float()
-        edge_index = torch.stack(
-            [
-                torch.from_numpy(message_data.sources).long(),
-                torch.from_numpy(message_data.destinations).long(),
-            ],
-            dim=0,
-        )
-
-        # Get edge features for these edges
-        if hasattr(message_data, "edge_idxs") and message_data.edge_idxs is not None:
-            edge_features_indices = message_data.edge_idxs
-        else:
-            edge_features_indices = np.arange(len(message_data.sources))
-        edge_attr = torch.from_numpy(self.edge_features[edge_features_indices]).float()
-        if hasattr(label_data, "edge_idxs") and label_data.edge_idxs is not None:
-            edge_features_indices = label_data.edge_idxs
-        else:
-            edge_features_indices = np.arange(len(label_data.sources))
-        edge_label_attr = torch.from_numpy(
-            self.edge_features[edge_features_indices]
-        ).float()
-
-        # Labels and timestamps
-        edge_label_index = torch.stack(
-            [
-                torch.from_numpy(label_data.sources).long(),
-                torch.from_numpy(label_data.destinations).long(),
-            ],
-            dim=0,
-        )
-        edge_label = torch.ones_like(edge_label_index[0]).float()
-        t = torch.from_numpy(message_data.timestamps).float()
-        edge_label_t = torch.from_numpy(label_data.timestamps).float()
-
-        # Negative sampling for edge labels
-        if self.negative_sampling_ratio > 0:
-            neg_edges = negative_sampling(
-                edge_index=edge_label_index,
-                num_nodes=int(self.num_nodes),
-                num_neg_samples=self.negative_sampling_ratio,
-                method="sparse",
-            )
-            edge_label_index = torch.cat([edge_label_index, neg_edges], dim=1)
-            neg_edge_label = torch.zeros(neg_edges.size(1), dtype=torch.float)
-            edge_label = torch.cat([edge_label, neg_edge_label], dim=0)
-            edge_label_t = torch.cat(
-                [edge_label_t, neg_edge_label.new_zeros(neg_edges.size(1))], dim=0
-            )
-            edge_label_attr = torch.cat(
+            msk = np.logical_and.reduce(
                 [
-                    edge_label_attr,
-                    edge_label_attr.new_zeros(
-                        (neg_edges.size(1), edge_label_attr.size(1))
-                    ),
-                ],
-                dim=0,
+                    ~np.isin(self.full_data.sources, self.unseen_nodes),
+                    ~np.isin(self.full_data.destinations, self.unseen_nodes),
+                    self.full_data.timestamps < test_timestamp,
+                ]
             )
+            message_data = self.full_data.apply_mask(msk)
+            tensor_dict = message_data.to_tensor_dict()
+            message_edges = {
+                "edge_index": tensor_dict["edge_index"],
+                "edge_attr": tensor_dict["edge_attr"],
+                "edge_idxs": tensor_dict["edge_idx"],
+                "edge_time": tensor_dict["edge_time"],
+            }
+            tensor_dict = message_data.to_tensor_dict()
+        else:
+            message_edges = super().get_message_edges(stage, temporal_data)
 
+        return message_edges
+
+    def get_label_edges(self, stage, temporal_data=None):
+        if stage == "train" and self.disjoint_training_edges:
+            # For disjoint training, use the masked edges for link prediction labels
+            msk = self.training_disjoint_mask
+            label_data = temporal_data.apply_mask(msk)
+            tensor_dict = label_data.to_tensor_dict()
+            label_edges = {
+                "edge_label_index": tensor_dict["edge_index"],
+                "edge_label_idx": tensor_dict["edge_idx"],
+                "edge_label": torch.ones_like(tensor_dict["edge_idx"]),
+                "edge_label_time": tensor_dict["edge_time"],
+                # "edge_label_attr": tensor_dict.get("edge_attr", None),    # not needed
+            }
+
+        else:
+            label_edges = super().get_label_edges(stage, temporal_data)
+
+        if "edge_label" in label_edges:
+            # Negative sampling:  In case edge_label does not exist, it will be automatically created and represents a binary classification task (0 = negative edge, 1 = positive edge).
+            del label_edges["edge_label"]
+        return label_edges
+
+    def add_inductive_node_info(self, pyg_data: Data, stage: str) -> Data:
         # Add node type information for inductive evaluation
         # Create masks for different edge types based on node information with bounds checking
+        node_type_info = getattr(self, f"{stage}_node_type_info", None)
         if self.mode == "inductive" and node_type_info is not None:
             is_new_node_mask = []
             edge_types = []
-            for src, dst in edge_label_index.T.numpy():
+            for src, dst in pyg_data.edge_label_index.T.numpy():
                 # Check bounds to avoid index errors
                 src_is_new = (
                     src < len(node_type_info["is_new_node"])
@@ -369,28 +340,16 @@ class LPDataModule(pl.LightningDataModule):
                     edge_types.append(0)  # old-old
 
             is_new_node_mask = torch.from_numpy(np.array(is_new_node_mask, dtype=bool))
-            edge_types = torch.tensor(edge_types)
+            edge_types = torch.tensor(edge_types, dtype=torch.int8)
 
-            node_info = {"is_new_node": is_new_node_mask, "edge_types": edge_types}
+            # node_info = {"is_new_node": is_new_node_mask, "edge_types": edge_types}
+            pyg_data.is_new_node_edge = is_new_node_mask
+            pyg_data.edge_types = edge_types
         else:
-            node_info = None
-
-        data = Data(
-            x=x,
-            # edge data for message passing
-            edge_index=edge_index,
-            edge_attr=edge_attr,
-            t=t,
-            # edge data for supervision
-            edge_label=edge_label,
-            edge_label_index=edge_label_index,
-            edge_label_attr=edge_label_attr,
-            edge_label_t=edge_label_t,
-            # data for inductive evaluation
-            node_info=node_info,
-        )
-
-        return data
+            # node_info = None
+            pyg_data.is_new_node_edge = None
+            pyg_data.edge_types = None
+        return pyg_data
 
     def train_dataloader(self) -> DataLoader:
         """Return training data loader."""
@@ -398,17 +357,23 @@ class LPDataModule(pl.LightningDataModule):
             raise ValueError("Training data not initialized. Call setup('fit') first.")
 
         # Convert to PyG Data object with node type information
-        node_type_info = getattr(self, "train_node_type_info", None)
-        data = self._create_pyg_data(self.train_data, node_type_info, "train", True)
-
-        return DataLoader(
-            [data],  # Single graph object
+        if self._train_pyg_data is None:
+            self._train_pyg_data = self._create_pyg_data(self.train_data, "train")
+        link_loader = LinkNeighborLoader(
+            data=self._train_pyg_data,
+            num_neighbors=self.num_neighbors,
+            neg_sampling_ratio=self.negative_sampling_ratio,
             batch_size=self.batch_size,
+            shuffle=self.shuffle_train,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            shuffle=self.shuffle_train,
-            persistent_workers=self.num_workers > 0,
+            edge_label_index=self._train_pyg_data.edge_label_index,
+            time_attr="edge_time",
+            edge_label_time=self._train_pyg_data.edge_label_time,
+            # edge_label=self._train_pyg_data.edge_label,
+            transform=lambda batch: self.add_inductive_node_info(batch, stage="train"),
         )
+        return link_loader
 
     def val_dataloader(self) -> DataLoader:
         """Return validation data loader."""
@@ -418,67 +383,49 @@ class LPDataModule(pl.LightningDataModule):
             )
 
         # Convert to PyG Data object with node type information
-        node_type_info = getattr(self, "val_node_type_info", None)
-        self._val_pyg_data = self._create_pyg_data(
-            self.val_data,
-            node_type_info,
-            stage="val",
-        )
-
-        return DataLoader(
-            [self._val_pyg_data],
+        if self._val_pyg_data is None:
+            self._val_pyg_data = self._create_pyg_data(
+                self.val_data,
+                stage="val",
+            )
+        link_loader = LinkNeighborLoader(
+            data=self._val_pyg_data,
+            num_neighbors=self.num_neighbors,
+            neg_sampling_ratio=self.negative_sampling_ratio,
             batch_size=self.batch_size,
+            shuffle=False,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            shuffle=False,
-            persistent_workers=self.num_workers > 0,
+            edge_label_index=self._val_pyg_data.edge_label_index,
+            time_attr="edge_time",
+            edge_label_time=self._val_pyg_data.edge_label_time,
+            # edge_label=self._val_pyg_data.edge_label,
+            transform=lambda batch: self.add_inductive_node_info(batch, stage="val"),
         )
+        return link_loader
 
     def test_dataloader(self) -> DataLoader:
         """Return test data loader."""
         if self.test_data is None:
             raise ValueError("Test data not initialized. Call setup('test') first.")
 
-        # Convert to PyG Data object with node type information
-        node_type_info = getattr(self, "test_node_type_info", None)
-        self._test_pyg_data = self._create_pyg_data(
-            self.test_data,
-            node_type_info,
-            stage="test",
-        )
-
-        return DataLoader(
-            [self._test_pyg_data],
+        if self._test_pyg_data is None:
+            self._test_pyg_data = self._create_pyg_data(
+                self.test_data,
+                stage="test",
+            )
+        link_loader = LinkNeighborLoader(
+            data=self._test_pyg_data,
+            num_neighbors=self.num_neighbors,
+            neg_sampling_ratio=self.negative_sampling_ratio,
             batch_size=self.batch_size,
+            shuffle=self.shuffle_train,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            shuffle=False,
-            persistent_workers=self.num_workers > 0,
+            edge_label_index=self._test_pyg_data.edge_label_index,
+            time_attr="edge_time",
+            edge_label_time=self._test_pyg_data.edge_label_time,
+            # edge_label=self._test_pyg_data.edge_label,
+            transform=lambda batch: self.add_inductive_node_info(batch, stage="test"),
         )
-
-    def transfer_batch_to_device(
-        self, batch, device: torch.device, dataloader_idx: int = 0
-    ):
-        """Transfer batch to device with custom handling for graph data."""
-        # For graph data, transfer all tensors to device
-        if isinstance(batch, list) and len(batch) == 1:
-            batch = batch[0]  # Extract single Data object
-
-        # Move all tensor attributes to device
-        for attr in [
-            "x",
-            "edge_index",
-            "edge_attr",
-            "y",
-            "t",
-            "edge_label",
-            "edge_label_index",
-            "edge_label_t",
-            "edge_label_attr",
-            "n_id",
-            "e_id",
-        ]:
-            if hasattr(batch, attr) and getattr(batch, attr) is not None:
-                setattr(batch, attr, getattr(batch, attr).to(device))
-
-        return batch
+        return link_loader

@@ -63,7 +63,7 @@ class PretrainDataModule(LPDataModule):
         过于稀疏，大部分节点在快照中没有正样本，导致采样器报错。
         """
         
-        g = self._create_pyg_data(view, self.train_node_type_info)
+        g = self._create_pyg_data(view, 'train')
         pos_adj = to_dense_adj(g.edge_index, max_num_nodes=g.num_nodes)[0].to(torch.bool)
         neg_adj = 1 - pos_adj.to(torch.int) - torch.eye(pos_adj.size(0))[0]
 

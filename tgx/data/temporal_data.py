@@ -1,7 +1,8 @@
 """Temporal graph data structures."""
 
-from typing import Optional
+from typing import Dict, Optional
 import numpy as np
+import torch
 
 
 class Data:
@@ -20,7 +21,7 @@ class Data:
         edge_idx: Optional[np.ndarray] = None,
         labels: Optional[np.ndarray] = None,
         edge_feats: Optional[np.ndarray] = None,
-        node_feats: Optional[np.ndarray] = None
+        node_feats: Optional[np.ndarray] = None,
     ):
         """
         Initialize temporal graph data.
@@ -43,7 +44,9 @@ class Data:
         self.node_feats = node_feats
 
         self.num_edges = len(sources)
-        self.num_nodes = max(max(sources), max(destinations)) + 1 if len(sources) > 0 else 0
+        self.num_nodes = (
+            max(max(sources), max(destinations)) + 1 if len(sources) > 0 else 0
+        )
 
     def __len__(self) -> int:
         """Return number of edges."""
@@ -51,12 +54,14 @@ class Data:
 
     def __repr__(self) -> str:
         """String representation of the data."""
-        return (f"Data(num_edges={self.num_edges}, "
-                f"num_nodes={self.num_nodes}, "
-                f"time_range=({np.min(self.timestamps):.2f}, "
-                f"{np.max(self.timestamps):.2f})")
+        return (
+            f"Data(num_edges={self.num_edges}, "
+            f"num_nodes={self.num_nodes}, "
+            f"time_range=({np.min(self.timestamps):.2f}, "
+            f"{np.max(self.timestamps):.2f})"
+        )
 
-    def apply_mask(self, mask: np.ndarray) -> 'Data':
+    def apply_mask(self, mask: np.ndarray) -> "Data":
         """
         Apply boolean mask to create a new Data object.
 
@@ -69,7 +74,7 @@ class Data:
         new_data = Data(
             sources=self.sources[mask],
             destinations=self.destinations[mask],
-            timestamps=self.timestamps[mask]
+            timestamps=self.timestamps[mask],
         )
 
         if self.edge_idx is not None:
@@ -96,7 +101,7 @@ class Data:
         """
         return (self.timestamps >= start_time) & (self.timestamps < end_time)
 
-    def get_temporal_slice(self, start_time: float, end_time: float) -> 'Data':
+    def get_temporal_slice(self, start_time: float, end_time: float) -> "Data":
         """
         Get temporal slice of the data.
 
@@ -109,3 +114,48 @@ class Data:
         """
         mask = self.get_time_mask(start_time, end_time)
         return self.apply_mask(mask)
+
+    def to_tensor_dict(self) -> Dict[str, torch.Tensor]:
+        """
+        Convert data to a dictionary of numpy arrays.
+
+        Returns:
+            Dictionary with keys:
+                - edge_index: LongTensor of shape [2, num_edges]
+                - timestamps: FloatTensor of shape [num_edges]
+                - edge_idx, 'edge_labels': LongTensor of shape [num_edges] if applicable
+                - edge_attr: FloatTensor of shape [num_edges, num_edge_features] if applicable
+                - x: FloatTensor of shape [num_nodes, num_node_features] if applicable
+
+        """
+        data_dict = {
+            "edge_index": torch.stack(
+                [
+                    torch.from_numpy(self.sources).long(),
+                    torch.from_numpy(self.destinations).long(),
+                ],
+                dim=0,
+            ),
+            "edge_time": torch.from_numpy(self.timestamps).long(),
+        }
+        if self.edge_idx is not None:
+            data_dict["edge_idx"] = torch.from_numpy(self.edge_idx).long()
+        else:
+            data_dict["edge_idx"] = torch.arange(self.num_edges).long()
+
+        if self.labels is not None:
+            data_dict["edge_labels"] = torch.from_numpy(self.labels).long()
+        else:
+            data_dict["edge_labels"] = None
+
+        if self.edge_feats is not None:
+            data_dict["edge_attr"] = torch.from_numpy(self.edge_feats).float()
+        else:
+            data_dict["edge_attr"] = None
+
+        if self.node_feats is not None:
+            data_dict["x"] = torch.from_numpy(self.node_feats).float()
+        else:
+            data_dict["x"] = None
+
+        return data_dict

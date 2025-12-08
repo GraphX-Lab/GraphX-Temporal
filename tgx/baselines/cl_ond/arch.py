@@ -1,3 +1,7 @@
+"""The simple implementation of CL-OND model.
+Paper: A contrastive learning strategy for optimizing node non-alignment in dynamic community detection, Neurocomputing 2025.
+DOI: 10.1016/j.neucom.2025.129548
+"""
 from pathlib import Path
 from typing import List
 
@@ -7,6 +11,7 @@ from torch_geometric.nn import GCN, MLP
 from torch_geometric.data import Data
 from torch_geometric.utils import to_dense_adj, to_undirected
 from torch_scatter import scatter
+
 
 from tgx.data import Data as TemporalData
 from tgx.models import TemporalModel
@@ -236,7 +241,7 @@ class DownstreamModel(TemporalModel):
         hidden_dim: int = 256,
         output_dim: int = 128,
         pretrained_ckpt_path: Path = None,
-        frozen_backbone: bool = False,
+        frozen_backbone: bool = True,
         **kwargs,
     ):
         self.input_dim = input_dim
@@ -258,6 +263,11 @@ class DownstreamModel(TemporalModel):
             out_channels=output_dim,
             num_layers=1,
         )
+                
+        if self.frozen_backbone:
+            for param in self.backbone.parameters():
+                param.requires_grad = False
+            print("Froze backbone parameters.")
 
     def forward(self, batch, *args, **kwargs) -> ModelOutputs: 
         x = batch.x
@@ -278,11 +288,6 @@ class DownstreamModel(TemporalModel):
     def on_fit_start(self):
         if self.pretrained_ckpt_path is not None:
             self.load_pretrained(self.pretrained_ckpt_path)
-        
-            if self.frozen_backbone:
-                for param in self.backbone.parameters():
-                    param.requires_grad = False
-                self.print("Froze backbone parameters.")
         return super().on_fit_start()
 
     def load_pretrained(self, path: Path):
@@ -318,3 +323,5 @@ class DownstreamModel(TemporalModel):
             RichProgressBar(leave=False),
         ]
         return cbs
+    
+    

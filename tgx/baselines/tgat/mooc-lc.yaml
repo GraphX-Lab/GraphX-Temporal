@@ -1,32 +1,36 @@
-
+# Lightning CLI configuration for MOOC dataset - Link Prediction Task
 fit:
+  # Model parameters (model class parameters) - LP specific
   model:
-    class_path: tgx.baselines.cl_ond.arch.DownstreamModel
+    class_path: tgx.baselines.tgat.arch.TGATModel
     init_args:
       input_dim: 172
-      hidden_dim: 128
-      output_dim: 128
-      pretrained_ckpt_path: checkpoints/cl-ond/mooc/pretrain-transductive/best.ckpt
-      frozen_backbone: true
+      hidden_dim: 172
+      dropout: 0.1
       evaluator:
         class_path: tgx.models.LinkClassificationEvaluator
         init_args:
-          input_dim: ${fit.model.init_args.output_dim}
+          input_dim: ${fit.model.init_args.hidden_dim}
 
-  # Data parameters (data class parameters) - LP DataModule
   data:
     class_path: tgx.data.LCDataModule
     init_args:
       dataset: mooc
       data_dir: ./datasets
-      split_ratio: [0.2, 0.15, 0.15]  # train, val, test
+      batch_size: 4096
+      num_workers: 32
+      pin_memory: true
       shuffle_train: true
+      mode: inductive  # transductive or inductive
+      # LP specific parameters
+      split_ratio: [0.7, 0.15, 0.15]  # train, val, test
 
   # Training parameters
   trainer:
     accelerator: gpu  # auto, cpu, gpu, tpu, mps
     devices: 1
     max_epochs: 100
+    gradient_clip_val: 1.0
     accumulate_grad_batches: 1
     log_every_n_steps: 1
 
@@ -34,7 +38,7 @@ fit:
     callbacks:
       # - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       #   init_args:
-      #     dirpath: ./checkpoints/cl-ond/${fit.data.init_args.dataset}/lc
+      #     dirpath: ./checkpoints/simple/gcn/${fit.data.init_args.dataset}/lc/
       #     filename: best
       #     monitor: val/loss
       #     mode: min
@@ -42,19 +46,20 @@ fit:
       #     save_last: true
       #     verbose: false
 
-      # - class_path: lightning.pytorch.callbacks.EarlyStopping
-      #   init_args:
-      #     monitor: val/loss
-      #     mode: min
-      #     patience: 10
-      #     verbose: false
+      - class_path: lightning.pytorch.callbacks.EarlyStopping
+        init_args:
+          monitor: val/loss
+          mode: min
+          patience: 10
+          verbose: false
 
       - class_path: lightning.pytorch.callbacks.RichProgressBar
         init_args:
           leave: false
 
+    # # Logger
     logger: 
       class_path: lightning.pytorch.loggers.CSVLogger
       init_args:
         save_dir: logs
-        name: cl-ond/lc
+        name: tgat/lc

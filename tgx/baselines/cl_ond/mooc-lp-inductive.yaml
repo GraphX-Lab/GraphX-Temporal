@@ -7,6 +7,7 @@ fit:
       hidden_dim: 128
       output_dim: 128
       pretrained_ckpt_path: checkpoints/cl-ond/mooc/pretrain/best.ckpt
+      frozen_backbone: true
       evaluator:
         class_path: tgx.models.LinkPredictionEvaluator
         init_args:
@@ -58,4 +59,4 @@ fit:
       class_path: lightning.pytorch.loggers.CSVLogger
       init_args:
         save_dir: logs
-        name: cl-ond/
+        name: cl-ond/lp

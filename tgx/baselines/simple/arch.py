@@ -238,8 +238,8 @@ class SimpleGNNModel(TemporalModel):
 
         # Edge features (time encoding)
         edge_attr = None
-        if self.use_time_encoding and hasattr(batch, "t") and batch.t is not None:
-            edge_attr = self.time_encoder(batch.t)
+        if self.use_time_encoding and getattr(batch, "edge_time", None) is not None:
+            edge_attr = self.time_encoder(batch.edge_time.float())
 
         # Ensure edge_index is valid: must be LongTensor and within bounds
         edge_index = batch.edge_index.long()
@@ -272,9 +272,6 @@ class SimpleGNNModel(TemporalModel):
         # Return node embeddings and edge information for task-specific evaluators
         return {
             "node_embeddings": x,
-            "edge_index": batch.edge_index,
-            "edge_attr": edge_attr,
-            "batch": batch,
         }
 
     @property

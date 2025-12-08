@@ -86,20 +86,18 @@ class LinkClassificationEvaluator(TemporalEvaluator):
             metrics = self.metric_collection(predictions, targets)
             return {key: value.item() for key, value in metrics.items()}
 
-    def log_metrics(self, metrics: Dict[str, float], stage: str, logger: Any) -> None:
+    def log_metrics(self, metrics: Dict[str, float], stage: str, logger: Any, batch_size=None) -> None:
         """Log link classification metrics."""
         for metric_name, metric_value in metrics.items():
-            logger.log(f"{stage}/{metric_name}", metric_value)
+            logger.log(f"{stage}/{metric_name}", metric_value, batch_size=batch_size)
 
         # Log main metric for optimization
         main_metric = "auroc"
-        logger.log(f"{stage}/main_metric", metrics.get(main_metric, 0.0))
-
+        logger.log(f"{stage}/main_metric", metrics.get(main_metric, 0.0), batch_size=batch_size)
         # Log per-class metrics
         if "precision_per_class" in metrics:
             for i, precision in enumerate(metrics["precision_per_class"]):
-                logger.log_dict({f"{stage}/precision_class_{i}": precision})
-
+                logger.log_dict({f"{stage}/precision_class_{i}": precision}, batch_size=batch_size)
     def get_targets(self, batch:Data, outputs: ModelOutputs, stage) -> torch.LongTensor:
         return batch.edge_label.long().to(self.device)
 
